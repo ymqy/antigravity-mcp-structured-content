@@ -1,6 +1,6 @@
 # antigravity-mcp-structured-content
 
-> 原生 Antigravity（`agy`）零依赖插件：按**显式适配器注册表**无损保留并注入 MCP 工具的 `structuredContent` 字段，彻底告别外部转发代理（如 `cua-driver-proxy`），让 `mcp_config.json` 直连官方 MCP 服务。
+> 原生 Antigravity（`agy`）零依赖插件：按**显式适配器注册表**无损保留并注入 MCP 工具的 `structuredContent` 字段，无需额外搭建外部 MCP 转发代理，让 `mcp_config.json` 直连官方 MCP 服务。
 
 ## 根因定位
 
