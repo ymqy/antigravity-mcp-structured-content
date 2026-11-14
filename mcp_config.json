@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "bridge": {
+      "command": "/bin/sh",
+      "args": [
+        "${PLUGIN_ROOT}/scripts/run_bridge_mcp.sh"
+      ]
+    }
+  }
+}

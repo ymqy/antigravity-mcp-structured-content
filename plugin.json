@@ -1,0 +1,18 @@
+{
+  "name": "antigravity-mcp-structured-content",
+  "displayName": "Antigravity MCP StructuredContent 补全",
+  "version": "1.0.0",
+  "description": "通过显式适配器注册表与生命周期 Hook，按需为丢失 MCP structuredContent 字段的工具无损补全结构化输出，无需外部代理即可直连官方 MCP 服务。",
+  "logo": "assets/logo.svg",
+  "homepage": "https://github.com/ymqy/antigravity-mcp-structured-content",
+  "repository": "https://github.com/ymqy/antigravity-mcp-structured-content",
+  "suggestedPrompts": [
+    "检查当前有哪些 MCP 服务启用了 structuredContent 显式适配规则",
+    "使用 cua-driver 隔离浏览器打开示例页面并验证 tab_id 与 refs 结构化返回",
+    "为新的 MCP 服务添加自定义 structuredContent 工具适配配置"
+  ],
+  "author": {
+    "name": "ymqy",
+    "url": "https://github.com/ymqy"
+  }
+}
