@@ -1,11 +1,11 @@
 #!/bin/sh
 # Fail-open POSIX wrapper for Antigravity MCP StructuredContent hooks.
-# Discovers Node.js even when Antigravity runs from macOS Dock/Finder GUI without interactive shell PATH.
+# Discovers Node.js and user-local binaries even when Antigravity runs from macOS Dock/Finder GUI.
 
 EVENT_NAME="${1:-Unknown}"
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
-export PATH="$PATH:/opt/homebrew/bin:/usr/local/bin"
+export PATH="$PATH:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin"
 if ! command -v node >/dev/null 2>&1 && [ -d "$HOME/.nvm/versions/node" ]; then
   LATEST_NODE_BIN="$(ls -1d "$HOME/.nvm/versions/node/"*/bin 2>/dev/null | tail -n 1)"
   if [ -n "$LATEST_NODE_BIN" ]; then

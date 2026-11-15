@@ -2,16 +2,19 @@
  * Minimal stdio JSON-RPC 2.0 MCP bridge server for antigravity-mcp-structured-content.
  *
  * Exposes `get_structured_result`, routed automatically by PreToolUse for adapted
- * MCP tools. Calls the target server through mcp_pool_daemon.mjs and appends
- * `[structuredContent] <JSON>` as a text content block so Antigravity delivers
- * the full structured payload natively inside CallToolResult.content.
+ * MCP servers/tools. Calls the target server through mcp_pool_daemon.mjs over a
+ * unified persistent connection (pinned by a zero-CPU socket lease tied to this
+ * bridge server's process lifetime) and appends deduplicated `[structuredContent] <JSON>`
+ * natively inside CallToolResult.content while preserving inline images and isError.
  */
-import { ensureDaemonRunning, sendDaemonRequest } from './daemon_client.mjs';
+import { attachDaemonLease, ensureDaemonRunning, sendDaemonRequest } from './daemon_client.mjs';
+import { JsonLineReader } from './json_line_reader.mjs';
+import { loadRegistryAndAdapter, resolveCallTimeoutMs } from './registry_config.mjs';
 
 const BRIDGE_TOOL = {
   name: 'get_structured_result',
   description:
-    'Internal bridge invoked automatically by antigravity-mcp-structured-content PreToolUse hook to preserve MCP structuredContent. Do not call directly; call the original MCP server tool instead.',
+    'Internal bridge invoked automatically by antigravity-mcp-structured-content PreToolUse hook to preserve MCP structuredContent over a unified persistent transport. Do not call directly; call the original MCP server tool instead.',
   inputSchema: {
     type: 'object',
     properties: {
@@ -28,6 +31,16 @@ const BRIDGE_TOOL = {
   },
 };
 
+let daemonLease = null;
+
+function ensureLeaseAttached() {
+  if (!daemonLease) {
+    daemonLease = attachDaemonLease({ role: 'bridge_mcp' });
+  } else {
+    daemonLease.ensureAttached();
+  }
+}
+
 function sendJsonRpc(msg) {
   process.stdout.write(`${JSON.stringify(msg)}\n`);
 }
@@ -43,9 +56,10 @@ function sendError(id, code, message) {
 async function handleToolCall(args) {
   const server = typeof args?.server === 'string' ? args.server : '';
   const tool = typeof args?.tool === 'string' ? args.tool : '';
-  const toolArgs = args?.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
-    ? args.arguments
-    : {};
+  const toolArgs =
+    args?.arguments && typeof args.arguments === 'object' && !Array.isArray(args.arguments)
+      ? args.arguments
+      : {};
   const workspacePaths = Array.isArray(args?.workspacePaths) ? args.workspacePaths : [];
 
   if (!server || !tool) {
@@ -62,7 +76,10 @@ async function handleToolCall(args) {
       isError: true,
     };
   }
+  ensureLeaseAttached();
 
+  const { adapter } = loadRegistryAndAdapter(server);
+  const callTimeoutMs = resolveCallTimeoutMs(adapter, toolArgs);
   let resp;
   try {
     resp = await sendDaemonRequest(
@@ -71,9 +88,10 @@ async function handleToolCall(args) {
         serverName: server,
         toolName: tool,
         arguments: toolArgs,
+        timeoutMs: callTimeoutMs,
         workspacePaths,
       },
-      42000,
+      callTimeoutMs + 5000,
     );
   } catch (err) {
     return {
@@ -116,7 +134,7 @@ async function handleRequest(msg) {
       sendResult(id, {
         protocolVersion: params?.protocolVersion || '2025-06-18',
         capabilities: { tools: {} },
-        serverInfo: { name: 'antigravity-mcp-structured-content-bridge', version: '1.0.0' },
+        serverInfo: { name: 'antigravity-mcp-structured-content-bridge', version: '1.1.0' },
       });
     } else if (method === 'ping') {
       sendResult(id, {});
@@ -141,28 +159,30 @@ async function handleRequest(msg) {
   }
 }
 
-let rxBuffer = Buffer.alloc(0);
-process.stdin.on('data', (chunk) => {
-  rxBuffer = Buffer.concat([rxBuffer, chunk]);
-  while (true) {
-    const nl = rxBuffer.indexOf(0x0a);
-    if (nl === -1) break;
-    const lineBuf = rxBuffer.subarray(0, nl);
-    rxBuffer = rxBuffer.subarray(nl + 1);
-    const line = lineBuf.toString('utf8').replace(/\r$/, '').trim();
-    if (!line) continue;
-    let msg;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      continue;
-    }
-    if (msg && typeof msg === 'object') {
-      void handleRequest(msg);
-    }
+const stdinReader = new JsonLineReader((line) => {
+  let msg;
+  try {
+    msg = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (msg && typeof msg === 'object') {
+    void handleRequest(msg);
   }
 });
 
-process.stdin.on('end', () => process.exit(0));
-process.on('SIGTERM', () => process.exit(0));
-process.on('SIGINT', () => process.exit(0));
+process.stdin.on('data', (chunk) => stdinReader.push(chunk));
+
+function shutdown() {
+  stdinReader.reset();
+  if (daemonLease) {
+    daemonLease.close();
+    daemonLease = null;
+  }
+  process.exit(0);
+}
+
+process.stdin.on('end', shutdown);
+process.on('SIGTERM', shutdown);
+process.on('SIGINT', shutdown);
+process.on('SIGHUP', shutdown);

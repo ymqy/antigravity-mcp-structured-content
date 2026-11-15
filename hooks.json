@@ -12,18 +12,6 @@
           }
         ]
       }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "call_mcp_tool",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "./scripts/run_hook.sh PostToolUse",
-            "timeout": 15
-          }
-        ]
-      }
     ]
   }
 }

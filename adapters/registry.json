@@ -1,33 +1,15 @@
 {
-  "version": 1,
+  "version": 2,
   "bridgeServerName": "antigravity-mcp-structured-content_bridge",
   "bridgeToolName": "get_structured_result",
   "servers": {
     "cua-driver": {
       "enabled": true,
-      "description": "Cua Driver (0.49.x): 补全 browser_* (CDP) 与会话查询工具仅存于 structuredContent 的 tab_id / refs / dialog_id / prepared_pid / 下载与会话元数据；桌面与截图类工具保持 100% 原生直通。",
-      "interceptTools": [
-        "browser_prepare",
-        "get_browser_state",
-        "browser_navigate",
-        "browser_type",
-        "browser_select",
-        "browser_click",
-        "browser_dialog",
-        "browser_set_input_files",
-        "browser_download",
-        "browser_pointer",
-        "get_session",
-        "list_sessions"
-      ],
-      "syncAfterTools": {
-        "start_session": {
-          "onlyIfActive": false
-        },
-        "end_session": {
-          "onlyIfActive": true
-        }
-      }
+      "description": "Cua Driver (0.49.x+): 采用全量单连接路由 (\"*\") 消除双连接会话/截图/快照上下文分裂，无损保留全部工具（剪贴板、驱动配置、光标状态、窗口控件树、桌面截图、浏览器与会话生命周期等）的 structuredContent 及原生内联图片，并自动剔除与 content[].text 完全重复的大文本字段（如 tree_markdown）。",
+      "interceptTools": "*",
+      "excludeTools": [],
+      "dedupeTextInContent": true,
+      "omitStructuredFields": []
     }
   }
 }

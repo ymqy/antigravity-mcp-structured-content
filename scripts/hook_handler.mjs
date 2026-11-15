@@ -1,25 +1,17 @@
 /**
- * Antigravity lifecycle hook handler for MCP structuredContent preservation.
+ * Antigravity PreToolUse lifecycle hook handler for MCP structuredContent preservation.
  *
- * Driven strictly by the Explicit Adapter Registry (adapters/registry.json + optional
- * user overrides at ~/.gemini/config/mcp_structured_content.json). Unaffected tools and
- * desktop/screenshot tools bypass with zero interception (~2ms).
+ * Driven strictly by the Explicit Adapter Registry (`adapters/registry.json` + optional
+ * user overrides at `~/.gemini/config/mcp_structured_content.json`).
  *
- * PreToolUse rewrites intercepted calls to the plugin's bundled bridge MCP server tool
- * (`antigravity-mcp-structured-content_bridge:get_structured_result`), which executes the
- * real call in mcp_pool_daemon.mjs and appends `[structuredContent] {...}` directly to
- * CallToolResult.content. PostToolUse mirrors session lifecycle tools (`syncAfterTools`).
+ * Supports both:
+ * - Full-server single-connection mode (`"interceptTools": "*"`), eliminating dual-connection
+ *   transport split for stateful servers like `cua-driver`.
+ * - Selective tool mode (`"interceptTools": [...]`) for stateless servers, bypassing
+ *   unaffected servers/tools in ~2ms.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { ensureDaemonRunning, sendDaemonRequest } from './daemon_client.mjs';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const PLUGIN_ROOT = process.env.PLUGIN_ROOT || dirname(__dirname);
-const BUILTIN_REGISTRY_PATH = join(PLUGIN_ROOT, 'adapters', 'registry.json');
-const USER_OVERRIDE_PATH = join(homedir(), '.gemini', 'config', 'mcp_structured_content.json');
+import { readFileSync } from 'node:fs';
+import { loadRegistryAndAdapter, shouldInterceptTool } from './registry_config.mjs';
 
 const eventName = process.argv[2] || 'Unknown';
 
@@ -28,15 +20,6 @@ function readStdinSync() {
     return readFileSync(0, 'utf8');
   } catch {
     return '';
-  }
-}
-
-function readJsonFile(filePath) {
-  if (!existsSync(filePath)) return null;
-  try {
-    return JSON.parse(readFileSync(filePath, 'utf8'));
-  } catch {
-    return null;
   }
 }
 
@@ -74,25 +57,17 @@ function decodeToolArg(raw, expectObject = false) {
   return typeof val === 'string' ? val : String(val);
 }
 
-function loadRegistryAndAdapter(serverName) {
-  const builtin = readJsonFile(BUILTIN_REGISTRY_PATH) || {};
-  const user = readJsonFile(USER_OVERRIDE_PATH) || {};
-  const bridgeServerName =
-    user.bridgeServerName || builtin.bridgeServerName || 'antigravity-mcp-structured-content_bridge';
-  const bridgeToolName =
-    user.bridgeToolName || builtin.bridgeToolName || 'get_structured_result';
-
-  const base = builtin.servers?.[serverName];
-  const extra = user.servers?.[serverName];
-  if (!base && !extra) {
-    return { bridgeServerName, bridgeToolName, adapter: null };
+function collectWorkspacePaths(payload) {
+  const paths = [];
+  if (Array.isArray(payload?.workspacePaths)) {
+    for (const p of payload.workspacePaths) {
+      if (typeof p === 'string' && p && !paths.includes(p)) paths.push(p);
+    }
   }
-  const merged = { ...(base || {}), ...(extra || {}) };
-  return {
-    bridgeServerName,
-    bridgeToolName,
-    adapter: merged.enabled === false ? null : merged,
-  };
+  if (typeof payload?.cwd === 'string' && payload.cwd && !paths.includes(payload.cwd)) {
+    paths.push(payload.cwd);
+  }
+  return paths;
 }
 
 function handlePreToolUse(payload) {
@@ -114,8 +89,7 @@ function handlePreToolUse(payload) {
   if (serverName === bridgeServerName) {
     return { decision: 'allow' };
   }
-  const interceptList = Array.isArray(adapter?.interceptTools) ? adapter.interceptTools : [];
-  if (!adapter || !interceptList.includes(toolName)) {
+  if (!shouldInterceptTool(adapter, toolName)) {
     return { decision: 'allow' };
   }
 
@@ -124,10 +98,11 @@ function handlePreToolUse(payload) {
     server: serverName,
     tool: toolName,
     arguments: toolArgs,
-    workspacePaths: Array.isArray(payload.workspacePaths) ? payload.workspacePaths : [],
+    workspacePaths: collectWorkspacePaths(payload),
   };
 
-  const stringifiedMode = typeof rawArgs.ToolName === 'string' && rawArgs.ToolName.trim().startsWith('"');
+  const stringifiedMode =
+    typeof rawArgs.ToolName === 'string' && rawArgs.ToolName.trim().startsWith('"');
   return {
     decision: 'allow',
     overwrite: stringifiedMode
@@ -144,60 +119,16 @@ function handlePreToolUse(payload) {
   };
 }
 
-async function handlePostToolUse(payload) {
-  if (process.env.AGY_MCP_SC_DISABLE === '1') return {};
-  if (payload?.toolCall?.name !== 'call_mcp_tool' || payload?.error) return {};
-
-  const rawArgs = payload?.toolCall?.args || {};
-  const serverName = decodeToolArg(rawArgs.ServerName, false);
-  const toolName = decodeToolArg(rawArgs.ToolName, false);
-  if (!serverName || !toolName) return {};
-
-  const { adapter } = loadRegistryAndAdapter(serverName);
-  const syncCfg = adapter?.syncAfterTools?.[toolName];
-  if (!syncCfg) return {};
-
-  const onlyIfActive = Boolean(syncCfg.onlyIfActive);
-  if (!onlyIfActive) {
-    const ready = await ensureDaemonRunning();
-    if (!ready) return {};
-  }
-
-  const toolArgs = decodeToolArg(rawArgs.Arguments, true);
-  try {
-    await sendDaemonRequest(
-      {
-        action: 'sync',
-        serverName,
-        toolName,
-        arguments: toolArgs,
-        onlyIfActive,
-        workspacePaths: payload.workspacePaths || [],
-      },
-      15000,
-    );
-  } catch {
-    // Non-blocking sync: never fail PostToolUse.
-  }
-  return {};
-}
-
-async function main() {
+function main() {
   const raw = readStdinSync();
   const payload = raw.trim() ? JSON.parse(raw) : {};
-
-  let out;
-  if (eventName === 'PreToolUse') {
-    out = handlePreToolUse(payload);
-  } else if (eventName === 'PostToolUse') {
-    out = await handlePostToolUse(payload);
-  } else {
-    out = {};
-  }
+  const out = eventName === 'PreToolUse' ? handlePreToolUse(payload) : {};
   process.stdout.write(`${JSON.stringify(out)}\n`);
 }
 
-main().catch(() => {
+try {
+  main();
+} catch {
   const fallback = eventName === 'PreToolUse' ? '{"decision":"allow"}\n' : '{}\n';
   process.stdout.write(fallback);
-});
+}
